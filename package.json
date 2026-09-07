@@ -25,14 +25,14 @@
   "homepage": "https://lab.geobim.app",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1009.0",
-    "@thatopen/components": "^3.3.3",
-    "@thatopen/fragments": "^3.3.6",
-    "@thatopen/ui": "^3.3.3",
+    "@thatopen/components": "^3.4.8",
+    "@thatopen/fragments": "^3.4.7",
+    "@thatopen/ui": "^3.4.11",
     "n8ao": "^1.10.1",
     "proj4": "^2.20.4",
     "three": "^0.183.2",
     "three-stdlib": "^2.36.1",
     "vite": "^7.3.1",
-    "web-ifc": "^0.0.74"
+    "web-ifc": "^0.0.77"
   }
 }
