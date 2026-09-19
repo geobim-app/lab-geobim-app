@@ -29,5 +29,11 @@ echo "]" >> "$INDEX"
 echo "[ Generated $INDEX ]"
 cat "$INDEX"
 
+# Sync web-ifc WASM binaries from node_modules so they always match the
+# installed web-ifc version (mismatched wasm/JS causes silent load failures)
+echo "[ Syncing web-ifc WASM binaries ]"
+mkdir -p public/wasm
+cp node_modules/web-ifc/web-ifc.wasm node_modules/web-ifc/web-ifc-mt.wasm public/wasm/
+
 echo "[ Running Vite build... ]"
 npx vite build

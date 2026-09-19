@@ -1226,6 +1226,12 @@ async function pollAssetStatus(assetId, token, statusEl) {
           linkEl.textContent = `Open Asset #${assetId} in Cesium Ion`;
           linkEl.style.display = 'inline-block';
         }
+        const geobimLinkEl = document.getElementById('geoOpenInGeobimLink');
+        if (geobimLinkEl) {
+          geobimLinkEl.href = `https://geobim.app/?asset=${assetId}`;
+          geobimLinkEl.textContent = `Open Asset #${assetId} in geobim.app`;
+          geobimLinkEl.style.display = 'inline-block';
+        }
         console.log(`Ion asset ready: ${ionUrl}`);
         return;
       } else if (data.status === 'ERROR') {
