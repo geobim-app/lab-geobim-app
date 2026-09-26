@@ -330,7 +330,10 @@
       <aside id="propsPanel" class="hidden">
         <div class="panel-header">
           <span>Properties</span>
-          <button class="panel-close" onclick="document.getElementById('propsPanel').classList.add('hidden')">&#10005;</button>
+          <div class="panel-header-actions">
+            <button id="togglePropsEdit" class="panel-edit-toggle" title="Toggle edit mode">Edit</button>
+            <button class="panel-close" onclick="document.getElementById('propsPanel').classList.add('hidden')">&#10005;</button>
+          </div>
         </div>
         <div id="propsContent" class="panel-body">
           <p class="empty-state">Click an element to see its properties</p>

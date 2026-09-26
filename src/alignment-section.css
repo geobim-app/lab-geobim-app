@@ -1,0 +1,107 @@
+/* Alignment section (alignment-section.js) */
+.axis-panel {
+  position: absolute;
+  top: var(--space-3);
+  right: calc(var(--space-3) + 280px);
+  width: 290px;
+  background: rgba(21, 25, 33, 0.92);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+  z-index: 21;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.axis-panel.hidden, .axis-profile.hidden { display: none; }
+.axis-panel-head, .axis-profile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.axis-panel-title {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--brand);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.axis-body { display: flex; flex-direction: column; gap: 6px; }
+.axis-hint { font-size: var(--text-sm); color: var(--text-secondary); }
+.axis-select, .axis-station {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-hover);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  padding: var(--space-1) var(--space-2);
+}
+.axis-select { width: 100%; }
+.axis-slider { width: 100%; accent-color: var(--brand); cursor: pointer; }
+.axis-row { display: flex; align-items: center; gap: 6px; }
+.axis-label { font-size: var(--text-xs); color: var(--text-muted); }
+.axis-station {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.axis-buttons { flex-wrap: wrap; }
+.axis-btn {
+  min-width: 32px;
+  height: 26px;
+  padding: 0 var(--space-2);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-hover);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+.axis-btn:hover { color: var(--text-primary); background: rgba(255, 255, 255, 0.1); }
+.axis-btn.active { color: var(--brand); border-color: var(--brand); background: rgba(46, 207, 176, 0.12); }
+.axis-btn:focus-visible, .axis-select:focus-visible, .axis-station:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+
+/* Bottom centre, one level above the other panels (lesson from geobim.app:
+   a bottom-right panel got covered by a tall side panel). */
+.axis-profile {
+  position: absolute;
+  left: max(var(--space-3), calc(50% - 280px));
+  bottom: var(--space-4);
+  width: min(560px, calc(100% - 2 * var(--space-3)));
+  height: min(360px, calc(100% - 2 * var(--space-4)));
+  min-width: 260px;
+  min-height: 180px;
+  background: rgba(21, 25, 33, 0.94);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  z-index: 22;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  resize: both;
+}
+.axis-profile-head { padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); }
+.axis-profile-actions { display: flex; gap: var(--space-1); align-items: center; }
+.axis-profile-body { position: relative; flex: 1; min-height: 0; }
+.axis-profile-svg { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+.axis-profile-svg:active { cursor: grabbing; }
+.axis-profile-svg .ap-grid { stroke: var(--border); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.axis-profile-svg .ap-zero { stroke: var(--border-hover); }
+.axis-profile-svg .ap-label { fill: var(--text-muted); font-family: ui-monospace, Menlo, monospace; }
+.axis-profile-svg .ap-cut { fill: none; stroke-width: 1.5; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.axis-profile-svg .ap-axis { fill: var(--brand); stroke: var(--text-primary); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.axis-profile-legend, .axis-profile-status {
+  position: absolute;
+  font-size: var(--text-xs);
+  pointer-events: none;
+}
+.axis-profile-legend { top: var(--space-1); right: var(--space-2); color: var(--text-muted); font-family: ui-monospace, Menlo, monospace; }
+.axis-profile-status { top: var(--space-2); left: var(--space-2); color: var(--text-secondary); }

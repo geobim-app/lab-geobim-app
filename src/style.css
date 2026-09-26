@@ -404,6 +404,34 @@ html, body, #app {
   color: var(--text-primary);
 }
 
+.panel-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.panel-edit-toggle {
+  padding: 2px 10px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.panel-edit-toggle:hover {
+  border-color: var(--border-hover);
+  color: var(--text-primary);
+}
+
+.panel-edit-toggle.active {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: var(--bg-base);
+}
+
 .panel-body {
   flex: 1;
   overflow-y: auto;
@@ -533,11 +561,29 @@ html, body, #app {
 
 .tree-group-label {
   font-size: var(--text-sm);
+  font-weight: 600;
   color: var(--text-primary);
   flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Element-count pill, ifc-lite-style (https://github.com/LTplus-AG/ifc-lite) */
+.tree-count-badge {
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 600;
+  font-family: var(--font-mono, monospace);
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
 }
 
 .tree-group-label::before {
@@ -566,11 +612,12 @@ html, body, #app {
 
 .tree-item {
   padding: var(--space-1) var(--space-2);
+  border-left: 3px solid transparent;
   border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: var(--text-xs);
   color: var(--text-secondary);
-  transition: background 0.1s ease;
+  transition: background 0.1s ease, border-color 0.1s ease;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -583,13 +630,57 @@ html, body, #app {
 
 .tree-item.selected {
   background: rgba(46, 207, 176, 0.12);
+  border-left-color: var(--brand);
   color: var(--brand);
+  font-weight: 600;
 }
 
 .tree-item span { flex: 1; cursor: pointer; }
 
 .tree-item.hidden-by-filter {
   display: none;
+}
+
+/* Per-row visibility toggle — revealed on hover, always shown once the
+   element is hidden. Idea from ifc-lite's hierarchy row eye icon
+   (https://github.com/LTplus-AG/ifc-lite). */
+.tree-item-eye {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.1s ease, color 0.1s ease, background 0.1s ease;
+}
+
+.tree-item-eye svg { width: 13px; height: 13px; }
+
+.tree-item:hover .tree-item-eye {
+  opacity: 1;
+}
+
+.tree-item-eye:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+
+.tree-item.item-hidden .tree-item-eye {
+  opacity: 1;
+  color: var(--text-muted);
+}
+
+.tree-item.item-hidden span {
+  opacity: 0.5;
+  text-decoration: line-through;
+  text-decoration-color: var(--text-muted);
 }
 
 .tree-group.hidden-by-filter {
@@ -680,6 +771,74 @@ html, body, #app {
   transform: rotate(90deg);
 }
 
+/* Pset/Qto cards — bordered container with a name + count badge in the
+   header, styled after ifc-lite's PropertySetCard
+   (https://github.com/LTplus-AG/ifc-lite). */
+.props-group-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0 var(--space-2);
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.props-group-card > .props-group-title {
+  border-bottom: none;
+  margin-bottom: 0;
+}
+
+.props-group-card:not(.collapsed) > .props-group-title {
+  border-bottom: 1px solid var(--border);
+}
+
+.props-group-card.new-pset {
+  border-color: rgba(255, 190, 80, 0.4);
+  background: rgba(255, 190, 80, 0.04);
+}
+
+.props-group-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.props-count-badge {
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.props-new-badge,
+.props-edited-badge {
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+}
+
+.props-new-badge {
+  color: #ffbe50;
+  background: rgba(255, 190, 80, 0.12);
+  border: 1px solid rgba(255, 190, 80, 0.3);
+}
+
+.props-edited-badge {
+  color: var(--brand);
+  background: rgba(46, 207, 176, 0.12);
+  border: 1px solid rgba(46, 207, 176, 0.3);
+}
+
 .props-row {
   display: flex;
   justify-content: space-between;
@@ -688,7 +847,18 @@ html, body, #app {
   border-bottom: 1px solid rgba(255, 255, 255, 0.03);
 }
 
+.props-row.edited {
+  background: rgba(46, 207, 176, 0.05);
+}
+
+.props-row.new-prop {
+  background: rgba(255, 190, 80, 0.05);
+}
+
 .props-key {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   color: var(--text-muted);
   flex-shrink: 0;
   margin-right: 8px;
@@ -698,6 +868,59 @@ html, body, #app {
   color: var(--text-primary);
   text-align: right;
   word-break: break-word;
+}
+
+.props-edit-input {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  text-align: right;
+  padding: 2px 4px;
+  max-width: 55%;
+}
+
+.props-edit-input:hover,
+.props-edit-input:focus {
+  border-color: var(--border-hover);
+  outline: none;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.props-add-row {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+}
+
+.props-add-input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  padding: 4px 6px;
+}
+
+.props-add-btn {
+  flex-shrink: 0;
+  background: var(--brand);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--bg-base);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.props-add-btn:hover {
+  background: var(--brand-dark);
 }
 
 /* ===============================

@@ -1,9 +1,11 @@
 import * as THREE from 'three';
 import * as OBC from '@thatopen/components';
+import * as FRAGS from '@thatopen/fragments';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { N8AOPass } from 'n8ao';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
+import { initAlignmentSection, reapplyAxisClip } from './alignment-section.js';
 import { toggleGeoPanel, setupGeoUI, invalidateGlbCache, updateFootprint, preGenerateGlb, autoDetectGeoref, applyGeorefOverride, activatePickupMode } from './georef.js';
 
 // Intercept BufferAttribute upload callbacks that delete .array
@@ -31,6 +33,29 @@ Object.defineProperty(THREE.BufferAttribute.prototype, 'onUploadCallback', {
 // That Open Components + Three.js
 // Phase 1: Multi-file, Hide, Delete, Type-Filter, Clipping
 // =====================================
+
+// getItemsData() only returns an item's own attributes by default — Psets/Qtos
+// hang off the IsDefinedBy relation and are omitted unless explicitly requested.
+const PROPS_DATA_CONFIG = {
+  attributesDefault: true,
+  relations: {
+    // relations:false here — IsDefinedBy also covers IfcRelDefinesByType, whose
+    // ObjectTypeOf relation points back at every occurrence of that type,
+    // producing a circular object graph if traversed further
+    IsDefinedBy: { attributes: true, relations: false },
+  },
+};
+
+// Second-hop fetch for an individual Pset/Qto item's own properties/quantities.
+// Pset -> HasProperties -> IfcPropertySingleValue, Qto -> Quantities -> IfcQuantity*
+// (both are literal IFC EXPRESS attribute names, preserved 1:1 in this schema).
+const PSET_DETAIL_CONFIG = {
+  attributesDefault: true,
+  relations: {
+    HasProperties: { attributes: true, relations: false },
+    Quantities: { attributes: true, relations: false },
+  },
+};
 
 const state = {
   components: null,
@@ -86,6 +111,14 @@ const state = {
   measurePreview: null,  // preview marker group
   measurePreviewLine: null, // live preview line to cursor
   measurements: [],      // [{ group, type, value }]
+
+  // Properties panel: edit mode + session-local mutation tracking
+  // (idea borrowed from ifc-lite's global edit-mode gate + mutation badges,
+  // see https://github.com/LTplus-AG/ifc-lite)
+  propsEditMode: false,
+  propsEditedKeys: new Set(),    // `${targetLocalId}:${key}` changed this session
+  propsNewPsetNames: new Set(),  // pset names added this session (per element)
+  propsNewPropKeys: new Set(),   // `${psetLocalId}:${propName}` added this session
 
   // Returns Set of expressIDs (localIds) that are hidden/deleted/category-filtered
   async getExcludedIds() {
@@ -274,6 +307,7 @@ async function init() {
   setStatus('Loading fragment worker...');
   const fragments = components.get(OBC.FragmentsManager);
   state.fragments = fragments;
+  window.__labState = state; // debug/test hook (headless tests, console)
 
   const workerResponse = await fetch(
     'https://thatopen.github.io/engine_fragment/resources/worker.mjs'
@@ -339,6 +373,7 @@ async function init() {
   setupUI();
   setupDragDrop();
   setupClipping();
+  initAlignmentSection(state);
 }
 
 // =====================================
@@ -1380,10 +1415,15 @@ function createTreeGroup(fileEntry, type, items) {
 
   const label = document.createElement('span');
   label.className = 'tree-group-label';
-  label.innerHTML = `<span class="type-badge" style="background:${color}"></span> ${escapeHtml(type)} (${items.length})`;
+  label.innerHTML = `<span class="type-badge" style="background:${color}"></span> ${escapeHtml(type)}`;
+
+  const countBadge = document.createElement('span');
+  countBadge.className = 'tree-count-badge';
+  countBadge.textContent = items.length;
 
   header.appendChild(checkbox);
   header.appendChild(label);
+  header.appendChild(countBadge);
 
   label.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -1397,17 +1437,29 @@ function createTreeGroup(fileEntry, type, items) {
     const key = `${fileEntry.modelId}:${localId}`;
     if (state.deletedSet.has(key)) return; // skip deleted
 
+    const isHidden = state.hiddenItems.has(key);
     const item = document.createElement('div');
-    item.className = 'tree-item tree-leaf';
+    item.className = `tree-item tree-leaf${isHidden ? ' item-hidden' : ''}`;
     item.dataset.name = (name || '').toLowerCase();
     item.dataset.localid = localId;
     item.dataset.modelid = fileEntry.modelId;
-    item.innerHTML = `<span>${escapeHtml(name || `#${localId}`)}</span>`;
+    item.innerHTML = `
+      <button type="button" class="tree-item-eye" title="${isHidden ? 'Show' : 'Hide'}">${isHidden ? eyeOffIcon() : eyeIcon()}</button>
+      <span>${escapeHtml(name || `#${localId}`)}</span>
+    `;
     item.addEventListener('click', (e) => {
       e.stopPropagation();
       document.getElementById('modelTree')?.querySelectorAll('.tree-item.selected').forEach((el) => el.classList.remove('selected'));
       item.classList.add('selected');
       selectFromTree(fileEntry.modelId, localId);
+    });
+    item.querySelector('.tree-item-eye').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (item.classList.contains('item-hidden')) {
+        await showTreeItem(fileEntry.modelId, localId);
+      } else {
+        await hideTreeItem(fileEntry.modelId, localId, name);
+      }
     });
     childrenWrap.appendChild(item);
   });
@@ -1450,8 +1502,8 @@ async function selectFromTree(modelId, localId) {
   try {
     const model = state.fragments.list.get(modelId);
     if (model) {
-      const data = await model.getItemsData([localId]);
-      showProperties(data, localId);
+      const data = await model.getItemsData([localId], PROPS_DATA_CONFIG);
+      await showProperties(data, localId, null, null, model, modelId);
     }
   } catch (err) {
     console.warn('selectFromTree properties failed:', err);
@@ -1531,7 +1583,7 @@ async function handleSelection() {
     try {
       const model = state.fragments.list.get(modelId);
       if (model) {
-        const data = await model.getItemsData([localId]);
+        const data = await model.getItemsData([localId], PROPS_DATA_CONFIG);
         // Get category + GUID from items map
         let category = null, guid = null;
         try {
@@ -1542,7 +1594,7 @@ async function handleSelection() {
             guid = itemInfo.guid || null;
           }
         } catch (_) {}
-        showProperties(data, localId, category, guid);
+        await showProperties(data, localId, category, guid, model, modelId);
         return;
       }
     } catch (err) {
@@ -1553,16 +1605,243 @@ async function handleSelection() {
   showPropertiesFallback(result);
 }
 
-function showProperties(dataArray, localId, category, guid) {
+// Pset/Qto items only carry their own Name via IsDefinedBy — their actual
+// property values hang off a second relation (HasProperties / Quantities),
+// so they need a separate targeted fetch per Pset/Qto localId.
+async function fetchPsetDetails(model, dataArray) {
+  const psetIds = [];
+  for (const itemData of dataArray) {
+    for (const related of itemData.IsDefinedBy || []) {
+      const cat = related._category?.value;
+      if (cat === 'IFCPROPERTYSET' || cat === 'IFCELEMENTQUANTITY') {
+        psetIds.push(related._localId.value);
+      }
+    }
+  }
+  if (psetIds.length === 0) return new Map();
+  try {
+    const details = await model.getItemsData(psetIds, PSET_DETAIL_CONFIG);
+    const byId = new Map();
+    details.forEach((d) => byId.set(d._localId.value, d));
+    return byId;
+  } catch (err) {
+    console.warn('Fetching Pset/Qto details failed:', err);
+    return new Map();
+  }
+}
+
+// Collects an item's own scalar attributes (excludes _category/_localId/_guid
+// and relation arrays). UPDATE_ITEM replaces an item's whole attribute set, so
+// editing a single value means resending all of these with one value swapped.
+function collectAttrs(itemData) {
+  const attrs = {};
+  for (const [key, val] of Object.entries(itemData)) {
+    if (key.startsWith('_') || Array.isArray(val)) continue;
+    if (val && typeof val === 'object' && 'value' in val) {
+      attrs[key] = { value: val.value, type: val.type };
+    }
+  }
+  return attrs;
+}
+
+function coerceValue(rawValue, type) {
+  const t = (type || '').toUpperCase();
+  if (t.includes('BOOLEAN')) return rawValue === 'true';
+  if (t.includes('INTEGER') || t.includes('COUNT')) {
+    const n = parseInt(rawValue, 10);
+    return Number.isNaN(n) ? rawValue : n;
+  }
+  if (t.includes('REAL') || t.includes('MEASURE') || t.includes('RATIO') || t.includes('NUMBER') || t.includes('VALUE')) {
+    const n = parseFloat(rawValue);
+    return Number.isNaN(n) ? rawValue : n;
+  }
+  return rawValue;
+}
+
+async function saveItemAttrs(modelId, targetLocalId, category, attrs) {
+  const editor = state.fragments?.core?.editor;
+  if (!editor) throw new Error('Fragments editor not available');
+  await editor.edit(modelId, [{
+    type: FRAGS.EditRequestType.UPDATE_ITEM,
+    localId: targetLocalId,
+    data: { category, data: attrs },
+  }]);
+  await editor.save(modelId);
+}
+
+async function addPropertyToPset(modelId, psetLocalId, relationName, name, rawValue) {
+  const editor = state.fragments?.core?.editor;
+  if (!editor) return;
+  try {
+    const tempId = editor.createItem(modelId, {
+      category: 'IFCPROPERTYSINGLEVALUE',
+      data: {
+        Name: { value: name, type: 'IFCIDENTIFIER' },
+        NominalValue: { value: rawValue, type: 'IFCLABEL' },
+      },
+    });
+    await editor.relate(modelId, psetLocalId, relationName, [tempId]);
+    // createItem/relate only queue requests on the elements helper — they're
+    // never flushed by save() alone, only by applyChanges() (which funnels
+    // them through editor.edit() internally). Without this, "+Pset"/"+" add
+    // silently no-op: no error, the request just sits unapplied forever.
+    await editor.applyChanges(modelId);
+    await editor.save(modelId);
+    setStatus(`Property "${name}" added`);
+    state.propsNewPropKeys.add(`${psetLocalId}:${name}`);
+    await refreshPropertiesPanel();
+  } catch (err) {
+    console.warn('Add property failed:', err);
+    setStatus('Add property failed — see console');
+  }
+}
+
+async function addPropertySet(modelId, elementLocalId, name) {
+  const editor = state.fragments?.core?.editor;
+  if (!editor) return;
+  try {
+    const tempId = editor.createItem(modelId, {
+      category: 'IFCPROPERTYSET',
+      data: { Name: { value: name, type: 'IFCLABEL' } },
+    });
+    await editor.relate(modelId, elementLocalId, 'IsDefinedBy', [tempId]);
+    // See comment in addPropertyToPset — applyChanges() must run before
+    // save() or the queued CREATE_ITEM/CREATE_RELATION never gets applied.
+    await editor.applyChanges(modelId);
+    await editor.save(modelId);
+    setStatus(`Property set "${name}" added`);
+    state.propsNewPsetNames.add(name);
+    await refreshPropertiesPanel();
+  } catch (err) {
+    console.warn('Add property set failed:', err);
+    setStatus('Add property set failed — see console');
+  }
+}
+
+async function refreshPropertiesPanel() {
+  const ctx = state.propsContext;
+  if (!ctx) return;
+  const model = state.fragments?.list.get(ctx.modelId);
+  if (!model) return;
+  const data = await model.getItemsData([ctx.localId], PROPS_DATA_CONFIG);
+  await showProperties(data, ctx.localId, ctx.category, ctx.guid, model, ctx.modelId);
+}
+
+function propRowEditable(targetLocalId, category, attrsObj, key, isNewProp = false) {
+  const attr = attrsObj[key] || {};
+  const type = attr.type || '';
+  const rowKey = `${targetLocalId}:${key}`;
+  const isEdited = state.propsEditedKeys.has(rowKey);
+  const rowClasses = ['props-row'];
+  if (isEdited) rowClasses.push('edited');
+  if (isNewProp) rowClasses.push('new-prop');
+  const badges = `${isNewProp ? '<span class="props-new-badge" title="Added this session">new</span>' : ''}${isEdited ? '<span class="props-edited-badge" title="Edited this session">edited</span>' : ''}`;
+  const keySpan = `<span class="props-key">${escapeHtml(key)}${badges}</span>`;
+
+  if (!state.propsEditMode) {
+    return `<div class="${rowClasses.join(' ')}" data-row-key="${escapeHtml(rowKey)}">${keySpan}<span class="props-value">${escapeHtml(formatValue(attr.value))}</span></div>`;
+  }
+
+  const attrsJson = escapeHtml(JSON.stringify(attrsObj));
+  let inputHtml;
+  if (type.toUpperCase().includes('BOOLEAN')) {
+    inputHtml = `<select class="props-edit-input" data-target-localid="${targetLocalId}" data-category="${escapeHtml(category || '')}" data-attrs='${attrsJson}' data-key="${escapeHtml(key)}">
+      <option value="true" ${attr.value ? 'selected' : ''}>true</option>
+      <option value="false" ${!attr.value ? 'selected' : ''}>false</option>
+    </select>`;
+  } else {
+    inputHtml = `<input type="text" class="props-edit-input" value="${escapeHtml(formatValue(attr.value))}" data-target-localid="${targetLocalId}" data-category="${escapeHtml(category || '')}" data-attrs='${attrsJson}' data-key="${escapeHtml(key)}">`;
+  }
+  return `<div class="${rowClasses.join(' ')}" data-row-key="${escapeHtml(rowKey)}">${keySpan}${inputHtml}</div>`;
+}
+
+function wirePropsPanelEvents(container) {
+  if (container.dataset.wired) return;
+  container.dataset.wired = '1';
+
+  container.addEventListener('change', async (e) => {
+    const el = e.target.closest('.props-edit-input');
+    if (!el) return;
+    const ctx = state.propsContext;
+    if (!ctx) return;
+    const targetLocalId = Number(el.dataset.targetLocalid);
+    const category = el.dataset.category;
+    const attrs = JSON.parse(el.dataset.attrs);
+    const key = el.dataset.key;
+    const type = attrs[key]?.type;
+    attrs[key] = { value: coerceValue(el.value, type), type };
+    el.disabled = true;
+    try {
+      await saveItemAttrs(ctx.modelId, targetLocalId, category, attrs);
+      setStatus(`Property "${key}" updated`);
+      state.propsEditedKeys.add(`${targetLocalId}:${key}`);
+      const row = el.closest('.props-row');
+      if (row) {
+        row.classList.add('edited');
+        const keyEl = row.querySelector('.props-key');
+        if (keyEl && !keyEl.querySelector('.props-edited-badge')) {
+          const badge = document.createElement('span');
+          badge.className = 'props-edited-badge';
+          badge.title = 'Edited this session';
+          badge.textContent = 'edited';
+          keyEl.appendChild(badge);
+        }
+      }
+    } catch (err) {
+      console.warn('Property update failed:', err);
+      setStatus('Property update failed — see console');
+    } finally {
+      el.disabled = false;
+    }
+  });
+
+  container.addEventListener('click', async (e) => {
+    const ctx = state.propsContext;
+    if (!ctx) return;
+
+    const addPropBtn = e.target.closest('[data-action="add-prop"]');
+    if (addPropBtn) {
+      const row = addPropBtn.closest('.props-add-row');
+      const name = row.querySelector('.props-add-key').value.trim();
+      const value = row.querySelector('.props-add-value').value.trim();
+      if (!name) return;
+      await addPropertyToPset(ctx.modelId, Number(row.dataset.psetLocalid), row.dataset.relation, name, value);
+      return;
+    }
+
+    const addPsetBtn = e.target.closest('[data-action="add-pset"]');
+    if (addPsetBtn) {
+      const row = addPsetBtn.closest('.props-add-row');
+      const name = row.querySelector('.props-add-key').value.trim();
+      if (!name) return;
+      await addPropertySet(ctx.modelId, Number(row.dataset.elementLocalid), name);
+    }
+  });
+}
+
+async function showProperties(dataArray, localId, category, guid, model, modelId) {
   const container = document.getElementById('propsContent');
   if (!container) return;
 
   document.getElementById('propsPanel')?.classList.remove('hidden');
   document.getElementById('toggleProps')?.classList.add('active');
 
+  // A different element than the one currently shown starts a fresh session —
+  // "edited"/"new" badges only make sense for the element they were made on.
+  const prevCtx = state.propsContext;
+  const isSameElement = prevCtx && prevCtx.modelId === modelId && prevCtx.localId === localId;
+  if (!isSameElement) {
+    state.propsEditedKeys.clear();
+    state.propsNewPsetNames.clear();
+    state.propsNewPropKeys.clear();
+  }
+
+  state.propsContext = { modelId, localId, category, guid };
+
+  const psetDetails = model ? await fetchPsetDetails(model, dataArray) : new Map();
+
   let html = '';
 
-  // Element header with IFC Type and GlobalId
   html += '<div class="props-group">';
   html += '<div class="props-group-title">Element</div>';
   if (category) html += propRow('IFC Type', category);
@@ -1577,63 +1856,68 @@ function showProperties(dataArray, localId, category, guid) {
 
   dataArray.forEach((itemData) => {
     if (!itemData) return;
-    const entries = Object.entries(itemData);
-    const attrs = [];
-    const psets = [];
-    const qtos = [];
+    const elementLocalId = itemData._localId?.value ?? localId;
+    const elementCategory = itemData._category?.value ?? category;
+    const attrs = collectAttrs(itemData);
 
-    entries.forEach(([key, val]) => {
-      if (Array.isArray(val)) {
-        // Separate Pset_ from Qto_ property sets
-        if (key.toLowerCase().startsWith('qto_') || key.toLowerCase().startsWith('baseq')) {
-          qtos.push([key, val]);
-        } else {
-          psets.push([key, val]);
-        }
-      } else if (val && typeof val === 'object' && 'value' in val) {
-        attrs.push([key, val.value]);
-      }
-    });
-
-    // Entity attributes in the header group
-    attrs.forEach(([key, val]) => {
-      html += propRow(key, formatValue(val));
+    Object.keys(attrs).forEach((key) => {
+      html += propRowEditable(elementLocalId, elementCategory, attrs, key);
     });
     html += '</div>';
 
-    // Property Sets (Pset_*) — collapsible
-    psets.forEach(([name, items]) => {
-      html += '<div class="props-group collapsed">';
-      html += `<div class="props-group-title" onclick="this.parentElement.classList.toggle('collapsed')"><span class="pset-toggle">&#9654;</span> ${escapeHtml(name)}</div>`;
-      items.forEach((subItem) => {
-        if (!subItem) return;
-        Object.entries(subItem).forEach(([subKey, subVal]) => {
-          if (subVal && typeof subVal === 'object' && 'value' in subVal) {
-            html += propRow(subKey, formatValue(subVal.value));
-          }
-        });
+    // Property Sets / Quantity Sets — via IsDefinedBy, editable + extendable
+    const psetRefs = (itemData.IsDefinedBy || []).filter((r) =>
+      r._category?.value === 'IFCPROPERTYSET' || r._category?.value === 'IFCELEMENTQUANTITY'
+    );
+    psetRefs.forEach((psetRef) => {
+      const psetLocalId = psetRef._localId.value;
+      const psetName = psetRef.Name?.value || `#${psetLocalId}`;
+      const detail = psetDetails.get(psetLocalId) || psetRef;
+      // Relation must follow the pset's IFC type, not whether it currently has
+      // any children — a freshly created empty IFCPROPERTYSET has no
+      // HasProperties array yet, so checking for that fell back to
+      // 'Quantities' and attached new properties via the wrong relation.
+      const psetCategory = (detail._category?.value || psetRef._category?.value || '').toUpperCase();
+      const relationName = psetCategory === 'IFCELEMENTQUANTITY' ? 'Quantities' : 'HasProperties';
+      const propsList = detail.HasProperties || detail.Quantities || [];
+
+      const isNewPset = state.propsNewPsetNames.has(psetName);
+      html += `<div class="props-group props-group-card${isNewPset ? ' new-pset' : ''} collapsed">`;
+      html += `<div class="props-group-title" onclick="this.parentElement.classList.toggle('collapsed')">
+        <span class="pset-toggle">&#9654;</span>
+        <span class="props-group-name">${escapeHtml(psetName)}</span>
+        ${isNewPset ? '<span class="props-new-badge" title="Added this session">new</span>' : ''}
+        <span class="props-count-badge">${propsList.length}</span>
+      </div>`;
+
+      propsList.forEach((propItem) => {
+        const propAttrs = collectAttrs(propItem);
+        if (!('Name' in propAttrs)) return;
+        const valueKey = Object.keys(propAttrs).find((k) => k !== 'Name');
+        if (!valueKey) return;
+        const isNewProp = state.propsNewPropKeys.has(`${psetLocalId}:${propAttrs.Name?.value}`);
+        html += propRowEditable(propItem._localId.value, propItem._category?.value, propAttrs, valueKey, isNewProp);
       });
+
+      html += `<div class="props-add-row" data-pset-localid="${psetLocalId}" data-relation="${relationName}">
+        <input type="text" class="props-add-input props-add-key" placeholder="Property name">
+        <input type="text" class="props-add-input props-add-value" placeholder="Value">
+        <button type="button" class="props-add-btn" data-action="add-prop" title="Add property">+</button>
+      </div>`;
+
       html += '</div>';
     });
 
-    // Quantities (Qto_*) — collapsible, formatted to 3 decimals
-    qtos.forEach(([name, items]) => {
-      html += '<div class="props-group collapsed">';
-      html += `<div class="props-group-title" onclick="this.parentElement.classList.toggle('collapsed')"><span class="pset-toggle">&#9654;</span> ${escapeHtml(name)}</div>`;
-      items.forEach((subItem) => {
-        if (!subItem) return;
-        Object.entries(subItem).forEach(([subKey, subVal]) => {
-          if (subVal && typeof subVal === 'object' && 'value' in subVal) {
-            const v = subVal.value;
-            html += propRow(subKey, typeof v === 'number' ? v.toFixed(3) : formatValue(v));
-          }
-        });
-      });
-      html += '</div>';
-    });
+    html += `<div class="props-group">
+      <div class="props-add-row" data-element-localid="${elementLocalId}">
+        <input type="text" class="props-add-input props-add-key" placeholder="New Pset name (e.g. Pset_Custom)">
+        <button type="button" class="props-add-btn" data-action="add-pset" title="Add property set">+ Pset</button>
+      </div>
+    </div>`;
   });
 
   container.innerHTML = html || '<p class="empty-state">No properties found</p>';
+  wirePropsPanelEvents(container);
 }
 
 function showPropertiesFallback(result) {
@@ -1709,9 +1993,6 @@ async function handleHideClick() {
 
   if (modelId == null || localId == null) return;
 
-  const key = `${modelId}:${localId}`;
-  if (state.hiddenItems.has(key)) return;
-
   // Get name for display
   let name = `#${localId}`;
   try {
@@ -1725,12 +2006,21 @@ async function handleHideClick() {
     }
   } catch (_) {}
 
-  state.hiddenItems.set(key, { modelId, localId, name });
+  await hideTreeItem(modelId, localId, name);
+}
 
-  // Hide using FragmentsManager visibility
+// Hide/show a single element by id — shared by the raycast Hide-mode click
+// and the per-row eye toggle in the Model Tree (idea from ifc-lite's
+// hover-reveal visibility icon, see https://github.com/LTplus-AG/ifc-lite).
+async function hideTreeItem(modelId, localId, name) {
+  if (!state.hider || !state.fragments) return;
+  const key = `${modelId}:${localId}`;
+  if (state.hiddenItems.has(key)) return;
+
+  state.hiddenItems.set(key, { modelId, localId, name: name || `#${localId}` });
+
   try {
-    const items = { [modelId]: new Set([localId]) };
-    await state.hider.set(false, items);
+    await state.hider.set(false, { [modelId]: new Set([localId]) });
     state.fragments.core.update(true);
   } catch (err) {
     console.warn('Hide failed:', err);
@@ -1739,6 +2029,40 @@ async function handleHideClick() {
   updateHideBadge();
   document.getElementById('showAllBtn')?.classList.remove('hidden');
   invalidateGlbCache();
+  syncTreeItemEye(modelId, localId, true);
+}
+
+async function showTreeItem(modelId, localId) {
+  if (!state.hider || !state.fragments) return;
+  const key = `${modelId}:${localId}`;
+  if (!state.hiddenItems.has(key)) return;
+
+  state.hiddenItems.delete(key);
+
+  try {
+    await state.hider.set(true, { [modelId]: new Set([localId]) });
+    state.fragments.core.update(true);
+  } catch (err) {
+    console.warn('Show failed:', err);
+  }
+
+  updateHideBadge();
+  if (state.hiddenItems.size === 0) document.getElementById('showAllBtn')?.classList.add('hidden');
+  invalidateGlbCache();
+  syncTreeItemEye(modelId, localId, false);
+}
+
+// Keep a Model Tree row's eye icon in sync when the element is hidden/shown
+// from somewhere other than that row's own button (raycast Hide Mode, Show All).
+function syncTreeItemEye(modelId, localId, hidden) {
+  const item = document.querySelector(`#modelTree .tree-item[data-modelid="${modelId}"][data-localid="${localId}"]`);
+  if (!item) return;
+  item.classList.toggle('item-hidden', hidden);
+  const eyeBtn = item.querySelector('.tree-item-eye');
+  if (eyeBtn) {
+    eyeBtn.innerHTML = hidden ? eyeOffIcon() : eyeIcon();
+    eyeBtn.title = hidden ? 'Show' : 'Hide';
+  }
 }
 
 async function showAllHidden() {
@@ -1763,6 +2087,16 @@ async function showAllHidden() {
   document.getElementById('showAllBtn')?.classList.add('hidden');
   invalidateGlbCache();
   setStatus('All elements shown');
+
+  // Reset any per-row eye icons the Model Tree left in the "hidden" state.
+  document.querySelectorAll('#modelTree .tree-item.item-hidden').forEach((item) => {
+    item.classList.remove('item-hidden');
+    const eyeBtn = item.querySelector('.tree-item-eye');
+    if (eyeBtn) {
+      eyeBtn.innerHTML = eyeIcon();
+      eyeBtn.title = 'Hide';
+    }
+  });
 }
 
 function updateHideBadge() {
@@ -2003,6 +2337,8 @@ function applyClipPlanes() {
       });
     }
   });
+  // the axis section's per-model plane was just overwritten — put it back
+  reapplyAxisClip();
 }
 
 // =====================================
@@ -2070,6 +2406,14 @@ function setupUI() {
   document.getElementById('toggleProps')?.addEventListener('click', () => {
     document.getElementById('propsPanel')?.classList.toggle('hidden');
     document.getElementById('toggleProps')?.classList.toggle('active');
+  });
+
+  // Props edit-mode toggle — gates all property inputs behind one switch so
+  // browsing properties never risks an accidental edit (idea from ifc-lite).
+  document.getElementById('togglePropsEdit')?.addEventListener('click', (e) => {
+    state.propsEditMode = !state.propsEditMode;
+    e.currentTarget.classList.toggle('active', state.propsEditMode);
+    if (state.propsContext) refreshPropertiesPanel();
   });
 
   // Clip toggle
