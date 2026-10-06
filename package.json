@@ -20,7 +20,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/christof2304/lab-geobim-app.git"
+    "url": "https://github.com/geobim-app/lab-geobim-app.git"
   },
   "homepage": "https://lab.geobim.app",
   "dependencies": {
